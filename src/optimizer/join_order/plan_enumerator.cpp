@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/optimizer/join_order/fqp_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_node.hpp"
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
 
@@ -133,8 +134,23 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	}
 	// need the filter info from the Neighborhood info.
 	auto cost = cost_model.ComputeCost(left, right);
+	auto cardinality = cost_model.cardinality_estimator.EstimateCardinalityWithSet<idx_t>(set);
 	auto result = make_uniq<DPJoinNode>(set, best_connection, left.set, right.set, cost);
-	result->cardinality = cost_model.cardinality_estimator.EstimateCardinalityWithSet<idx_t>(set);
+	result->cardinality = cardinality;
+	// Like contrib/mock_table, retain all usable destination annotations for
+	// upper joins, but leave the final join local at this planner's sink.
+	if (set.count < query_graph_manager.relation_manager.NumRelations()) {
+		result->fqp_alternatives =
+		    FQPOptimizer::GetJoinAlternatives(query_graph_manager, set, left, right, possible_connections);
+		for (idx_t i = 0; i < result->fqp_alternatives.size(); i++) {
+			auto &alternative = result->fqp_alternatives[i];
+			if (alternative.total_cost < result->cost) {
+				result->cost = alternative.total_cost;
+				result->cardinality = alternative.rows;
+				result->fqp_selected_alternative = i;
+			}
+		}
+	}
 	return result;
 }
 
@@ -460,6 +476,14 @@ void PlanEnumerator::InitLeafPlans() {
 		auto join_node = make_uniq<DPJoinNode>(relation_set);
 		join_node->cost = 0;
 		join_node->cardinality = stats.cardinality;
+		FQPPlanAlternative base_alternative;
+		if (FQPOptimizer::TryGetBaseCost(query_graph_manager, i, stats.cardinality, base_alternative)) {
+			join_node->fqp_alternatives.push_back(std::move(base_alternative));
+			join_node->fqp_selected_alternative = 0;
+			join_node->cost = join_node->fqp_alternatives[0].total_cost;
+			join_node->cardinality = join_node->fqp_alternatives[0].rows;
+			stats.cardinality = join_node->cardinality;
+		}
 		D_ASSERT(join_node->set.count == 1);
 		plans[relation_set] = std::move(join_node);
 		cost_model.cardinality_estimator.InitCardinalityEstimatorProps(&relation_set, stats);

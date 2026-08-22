@@ -2,6 +2,7 @@
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/join_type.hpp"
+#include "duckdb/optimizer/join_order/fqp_optimizer.hpp"
 #include "duckdb/optimizer/join_order/join_relation.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -399,6 +400,7 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 			}
 		}
 	}
+	result_operator = FQPOptimizer::WrapPlan(std::move(result_operator), *node);
 	auto result = GenerateJoinRelation(result_relation, std::move(result_operator));
 	return result;
 }

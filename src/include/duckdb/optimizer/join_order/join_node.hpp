@@ -7,12 +7,23 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/optimizer/join_order/join_relation.hpp"
 #include "duckdb/optimizer/join_order/query_graph.hpp"
 
 namespace duckdb {
 
 struct NeighborInfo;
+
+struct FQPPlanAlternative {
+	string source;
+	string sql;
+	double startup_cost = 0;
+	double total_cost = 0;
+	double movement_cost = 0;
+	idx_t rows = 0;
+	int width = 0;
+};
 
 class DPJoinNode {
 public:
@@ -32,6 +43,13 @@ public:
 	double cost;
 	//! used only to populate logical operators with estimated cardinalities after the best join plan has been found.
 	idx_t cardinality;
+
+	//! Federated execution alternatives must survive DP even when they are not
+	//! the cheapest local path. This is the DuckDB equivalent of the destination
+	//! annotated CustomPaths retained by contrib/mock_table.
+	vector<FQPPlanAlternative> fqp_alternatives;
+	//! The federated alternative selected for this node, if any.
+	optional_idx fqp_selected_alternative;
 
 	//! Create an intermediate node in the join tree. base_cardinality = estimated_props.cardinality
 	DPJoinNode(JoinRelationSet &set, optional_ptr<NeighborInfo> info, JoinRelationSet &left, JoinRelationSet &right,

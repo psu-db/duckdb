@@ -24,6 +24,13 @@ vector<unique_ptr<SingleJoinRelation>> RelationManager::GetRelations() {
 	return std::move(relations);
 }
 
+const SingleJoinRelation &RelationManager::GetRelation(idx_t relation_id) const {
+	if (relation_id >= relations.size()) {
+		throw InternalException("FQP relation id %llu out of range", relation_id);
+	}
+	return *relations[relation_id];
+}
+
 idx_t RelationManager::NumRelations() {
 	return relations.size();
 }

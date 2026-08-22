@@ -4,6 +4,7 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
+#include "duckdb/optimizer/join_order/fqp_optimizer.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
@@ -60,7 +61,19 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	} else {
 		new_logical_plan = std::move(plan);
 		if (relation_stats.size() == 1) {
-			new_logical_plan->estimated_cardinality = relation_stats.at(0).cardinality;
+			auto cardinality = relation_stats.at(0).cardinality;
+			auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(0);
+			DPJoinNode base_node(relation_set);
+			base_node.cardinality = cardinality;
+			FQPPlanAlternative base_alternative;
+			if (FQPOptimizer::TryGetBaseCost(query_graph_manager, 0, cardinality, base_alternative)) {
+				base_node.fqp_alternatives.push_back(std::move(base_alternative));
+				base_node.fqp_selected_alternative = 0;
+				base_node.cardinality = base_node.fqp_alternatives[0].rows;
+				cardinality = base_node.cardinality;
+				new_logical_plan = FQPOptimizer::WrapPlan(std::move(new_logical_plan), base_node);
+			}
+			new_logical_plan->estimated_cardinality = cardinality;
 			new_logical_plan->has_estimated_cardinality = true;
 		}
 	}

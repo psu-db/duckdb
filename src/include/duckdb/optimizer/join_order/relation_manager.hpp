@@ -60,6 +60,7 @@ public:
 	void AddAggregateOrWindowRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent,
 	                                  const RelationStats &stats, LogicalOperatorType op_type);
 	vector<unique_ptr<SingleJoinRelation>> GetRelations();
+	const SingleJoinRelation &GetRelation(idx_t relation_id) const;
 
 	const vector<RelationStats> GetRelationStats();
 	//! A mapping of base table index -> index into relations array (relation number)
