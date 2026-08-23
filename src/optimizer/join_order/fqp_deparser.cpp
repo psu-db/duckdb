@@ -11,6 +11,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -200,6 +201,22 @@ static bool DeparseRelationRef(QueryGraphManager &query_graph_manager, idx_t rel
 	return true;
 }
 
+static void AppendRequiredTableFilter(const TableFilter &filter, const string &column, vector<string> &predicates) {
+	if (filter.filter_type == TableFilterType::OPTIONAL_FILTER) {
+		return;
+	}
+	if (filter.filter_type == TableFilterType::CONJUNCTION_AND) {
+		for (auto &child : filter.Cast<ConjunctionAndFilter>().child_filters) {
+			AppendRequiredTableFilter(*child, column, predicates);
+		}
+		return;
+	}
+	auto predicate = filter.ToString(column);
+	if (std::find(predicates.begin(), predicates.end(), predicate) == predicates.end()) {
+		predicates.push_back(std::move(predicate));
+	}
+}
+
 static bool AppendTableFilters(QueryGraphManager &query_graph_manager, idx_t relation_id, vector<string> &predicates) {
 	auto &relation = query_graph_manager.relation_manager.GetRelation(relation_id);
 	auto get = FindLogicalGet(relation.op);
@@ -211,10 +228,7 @@ static bool AppendTableFilters(QueryGraphManager &query_graph_manager, idx_t rel
 			return false;
 		}
 		auto column = "r" + to_string(relation_id) + "." + QuoteIdentifier(get->names[entry.first]);
-		auto predicate = entry.second->ToString(column);
-		if (std::find(predicates.begin(), predicates.end(), predicate) == predicates.end()) {
-			predicates.push_back(std::move(predicate));
-		}
+		AppendRequiredTableFilter(*entry.second, column, predicates);
 	}
 	return true;
 }
