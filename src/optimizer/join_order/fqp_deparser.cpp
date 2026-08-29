@@ -10,8 +10,11 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
@@ -139,13 +142,46 @@ static bool DeparseConjunction(QueryGraphManager &query_graph_manager, const Bou
 	return true;
 }
 
+static bool DeparseOptimizedLike(QueryGraphManager &query_graph_manager, const BoundFunctionExpression &expr,
+                                 string &result) {
+	if (expr.children.size() != 2 || expr.children[1]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+		return false;
+	}
+	auto function_name = StringUtil::Lower(expr.function.name);
+	if (function_name != "contains" && function_name != "prefix" && function_name != "suffix") {
+		return false;
+	}
+	auto &constant = expr.children[1]->Cast<BoundConstantExpression>().value;
+	if (constant.IsNull() || constant.type().id() != LogicalTypeId::VARCHAR) {
+		return false;
+	}
+	string value = StringValue::Get(constant);
+	if (function_name == "contains" || function_name == "suffix") {
+		value = "%" + value;
+	}
+	if (function_name == "contains" || function_name == "prefix") {
+		value += "%";
+	}
+	string input;
+	if (!DeparseExpression(query_graph_manager, *expr.children[0], input)) {
+		return false;
+	}
+	result = "(" + input + " LIKE " + Value(value).ToSQLString() + ")";
+	return true;
+}
+
 static bool DeparseExpression(QueryGraphManager &query_graph_manager, const Expression &expr, string &result) {
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
 		return DeparseColumnRef(query_graph_manager, expr.Cast<BoundColumnRefExpression>(), result);
+	case ExpressionClass::BOUND_REF:
+		result = expr.Cast<BoundReferenceExpression>().ToString();
+		return true;
 	case ExpressionClass::BOUND_CONSTANT:
 		result = expr.Cast<BoundConstantExpression>().value.ToSQLString();
 		return true;
+	case ExpressionClass::BOUND_FUNCTION:
+		return DeparseOptimizedLike(query_graph_manager, expr.Cast<BoundFunctionExpression>(), result);
 	case ExpressionClass::BOUND_COMPARISON:
 		return DeparseComparison(query_graph_manager, expr.Cast<BoundComparisonExpression>(), result);
 	case ExpressionClass::BOUND_CONJUNCTION:
@@ -201,17 +237,27 @@ static bool DeparseRelationRef(QueryGraphManager &query_graph_manager, idx_t rel
 	return true;
 }
 
-static void AppendRequiredTableFilter(const TableFilter &filter, const string &column, vector<string> &predicates) {
+static void AppendRequiredTableFilter(QueryGraphManager &query_graph_manager, const TableFilter &filter,
+                                      const string &column, vector<string> &predicates) {
 	if (filter.filter_type == TableFilterType::OPTIONAL_FILTER) {
 		return;
 	}
 	if (filter.filter_type == TableFilterType::CONJUNCTION_AND) {
 		for (auto &child : filter.Cast<ConjunctionAndFilter>().child_filters) {
-			AppendRequiredTableFilter(*child, column, predicates);
+			AppendRequiredTableFilter(query_graph_manager, *child, column, predicates);
 		}
 		return;
 	}
-	auto predicate = filter.ToString(column);
+	string predicate;
+	if (filter.filter_type == TableFilterType::EXPRESSION_FILTER) {
+		BoundReferenceExpression column_ref(column, LogicalType::INVALID, 0);
+		auto expression = filter.Cast<ExpressionFilter>().ToExpression(column_ref);
+		if (!DeparseExpression(query_graph_manager, *expression, predicate)) {
+			predicate = filter.ToString(column);
+		}
+	} else {
+		predicate = filter.ToString(column);
+	}
 	if (std::find(predicates.begin(), predicates.end(), predicate) == predicates.end()) {
 		predicates.push_back(std::move(predicate));
 	}
@@ -228,7 +274,7 @@ static bool AppendTableFilters(QueryGraphManager &query_graph_manager, idx_t rel
 			return false;
 		}
 		auto column = "r" + to_string(relation_id) + "." + QuoteIdentifier(get->names[entry.first]);
-		AppendRequiredTableFilter(*entry.second, column, predicates);
+		AppendRequiredTableFilter(query_graph_manager, *entry.second, column, predicates);
 	}
 	return true;
 }
