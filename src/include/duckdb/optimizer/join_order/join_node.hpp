@@ -43,6 +43,9 @@ public:
 	double cost;
 	//! used only to populate logical operators with estimated cardinalities after the best join plan has been found.
 	idx_t cardinality;
+	//! Cost of the retained child decomposition before an opaque remote cost replaces it.
+	//! This is only a secondary key between equal alternatives for the same remote subtree.
+	double fqp_decomposition_cost = 0;
 
 	//! Federated execution alternatives must survive DP even when they are not
 	//! the cheapest local path. This is the DuckDB equivalent of the destination

@@ -137,6 +137,7 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	auto cardinality = cost_model.cardinality_estimator.EstimateCardinalityWithSet<idx_t>(set);
 	auto result = make_uniq<DPJoinNode>(set, best_connection, left.set, right.set, cost);
 	result->cardinality = cardinality;
+	result->fqp_decomposition_cost = cost;
 	// Like contrib/mock_table, retain all usable destination annotations for
 	// upper joins, but leave the final join local at this planner's sink.
 	if (set.count < query_graph_manager.relation_manager.NumRelations()) {
@@ -172,8 +173,23 @@ DPJoinNode &PlanEnumerator::EmitPair(JoinRelationSet &left, JoinRelationSet &rig
 	if (entry != plans.end()) {
 		old_cost = entry->second->cost;
 	}
-	if (entry == plans.end() || new_cost < old_cost) {
-		// the new plan costs less than the old plan. Update our DP table.
+	bool replace_plan = entry == plans.end() || new_cost < old_cost;
+	if (!replace_plan && entry != plans.end() && new_cost == old_cost &&
+	    new_plan->fqp_selected_alternative.IsValid() && entry->second->fqp_selected_alternative.IsValid()) {
+		auto &new_alternative =
+		    new_plan->fqp_alternatives[new_plan->fqp_selected_alternative.GetIndex()];
+		auto &old_alternative =
+		    entry->second->fqp_alternatives[entry->second->fqp_selected_alternative.GetIndex()];
+		// The remote cost describes the complete subtree and is identical for every
+		// decomposition of that subtree. Retain the cheaper realizable child DAG
+		// instead of allowing DP enumeration order to break the tie.
+		if (new_alternative.source == old_alternative.source && new_alternative.sql == old_alternative.sql &&
+		    new_plan->fqp_decomposition_cost < entry->second->fqp_decomposition_cost) {
+			replace_plan = true;
+		}
+	}
+	if (replace_plan) {
+		// The new plan is preferred by the primary cost or the scoped federated tie-break.
 		plans[new_set] = std::move(new_plan);
 		return *plans[new_set];
 	}
