@@ -137,7 +137,8 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	auto cardinality = cost_model.cardinality_estimator.EstimateCardinalityWithSet<idx_t>(set);
 	auto result = make_uniq<DPJoinNode>(set, best_connection, left.set, right.set, cost);
 	result->cardinality = cardinality;
-	result->fqp_decomposition_cost = cost;
+	result->fqp_realization_movement_rows =
+	    FQPOptimizer::EstimateJoinMovementRows(query_graph_manager, left, right, "");
 	// Like contrib/mock_table, retain all usable destination annotations for
 	// upper joins, but leave the final join local at this planner's sink.
 	if (set.count < query_graph_manager.relation_manager.NumRelations()) {
@@ -148,6 +149,7 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 			if (alternative.total_cost < result->cost) {
 				result->cost = alternative.total_cost;
 				result->cardinality = alternative.rows;
+				result->fqp_realization_movement_rows = alternative.realization_movement_rows;
 				result->fqp_selected_alternative = i;
 			}
 		}
@@ -173,20 +175,29 @@ DPJoinNode &PlanEnumerator::EmitPair(JoinRelationSet &left, JoinRelationSet &rig
 	if (entry != plans.end()) {
 		old_cost = entry->second->cost;
 	}
-	bool replace_plan = entry == plans.end() || new_cost < old_cost;
-	if (!replace_plan && entry != plans.end() && new_cost == old_cost &&
+	bool replace_plan = entry == plans.end();
+	bool same_remote_plan = false;
+	if (!replace_plan && entry != plans.end() &&
 	    new_plan->fqp_selected_alternative.IsValid() && entry->second->fqp_selected_alternative.IsValid()) {
 		auto &new_alternative =
 		    new_plan->fqp_alternatives[new_plan->fqp_selected_alternative.GetIndex()];
 		auto &old_alternative =
 		    entry->second->fqp_alternatives[entry->second->fqp_selected_alternative.GetIndex()];
-		// The remote cost describes the complete subtree and is identical for every
-		// decomposition of that subtree. Retain the cheaper realizable child DAG
-		// instead of allowing DP enumeration order to break the tie.
-		if (new_alternative.source == old_alternative.source && new_alternative.sql == old_alternative.sql &&
-		    new_plan->fqp_decomposition_cost < entry->second->fqp_decomposition_cost) {
-			replace_plan = true;
+		// Equal remote SQL describes the same operation regardless of which child
+		// split discovered it. Prefer the split that realizes that SQL with less
+		// input movement; the remote EXPLAIN cost does not contain this distinction.
+		same_remote_plan = new_alternative.source == old_alternative.source && new_alternative.sql == old_alternative.sql;
+		if (same_remote_plan) {
+			if (new_plan->fqp_realization_movement_rows < entry->second->fqp_realization_movement_rows) {
+				replace_plan = true;
+			} else if (new_plan->fqp_realization_movement_rows == entry->second->fqp_realization_movement_rows &&
+			           new_cost < old_cost) {
+				replace_plan = true;
+			}
 		}
+	}
+	if (!replace_plan && !same_remote_plan && new_cost < old_cost) {
+		replace_plan = true;
 	}
 	if (replace_plan) {
 		// The new plan is preferred by the primary cost or the scoped federated tie-break.

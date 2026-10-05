@@ -31,6 +31,8 @@ public:
 
 	static bool TryGetBaseCost(QueryGraphManager &query_graph_manager, idx_t relation_id, idx_t fallback_rows,
 	                           FQPPlanAlternative &result);
+	static double EstimateJoinMovementRows(QueryGraphManager &query_graph_manager, const DPJoinNode &left,
+	                                       const DPJoinNode &right, const string &destination);
 	static vector<FQPPlanAlternative> GetJoinAlternatives(QueryGraphManager &query_graph_manager, JoinRelationSet &set,
 	                                                      DPJoinNode &left, DPJoinNode &right,
 	                                                      const vector<reference<NeighborInfo>> &possible_connections);

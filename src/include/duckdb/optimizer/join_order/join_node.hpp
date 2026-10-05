@@ -21,6 +21,8 @@ struct FQPPlanAlternative {
 	double startup_cost = 0;
 	double total_cost = 0;
 	double movement_cost = 0;
+	//! Rows moved while realizing this alternative's retained child DAG.
+	double realization_movement_rows = 0;
 	idx_t rows = 0;
 	int width = 0;
 };
@@ -43,9 +45,8 @@ public:
 	double cost;
 	//! used only to populate logical operators with estimated cardinalities after the best join plan has been found.
 	idx_t cardinality;
-	//! Cost of the retained child decomposition before an opaque remote cost replaces it.
-	//! This is only a secondary key between equal alternatives for the same remote subtree.
-	double fqp_decomposition_cost = 0;
+	//! Rows moved by the retained child decomposition to realize this node at its selected site.
+	double fqp_realization_movement_rows = 0;
 
 	//! Federated execution alternatives must survive DP even when they are not
 	//! the cheapest local path. This is the DuckDB equivalent of the destination

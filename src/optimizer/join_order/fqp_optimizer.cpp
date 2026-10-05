@@ -66,6 +66,15 @@ static void AddCandidateSources(const DPJoinNode &node, vector<string> &sources)
 	}
 }
 
+static string SelectedOutputSource(const DPJoinNode &node, const string &local_source) {
+	if (!node.fqp_selected_alternative.IsValid()) {
+		return local_source;
+	}
+	auto index = node.fqp_selected_alternative.GetIndex();
+	D_ASSERT(index < node.fqp_alternatives.size());
+	return node.fqp_alternatives[index].source;
+}
+
 static bool LookupMockCost(ClientContext &context, const string &source, const string &sql, ExplainCost &cost) {
 	auto &state = GetFQPState(context);
 	std::lock_guard<std::mutex> guard(state.lock);
@@ -187,6 +196,25 @@ bool FQPOptimizer::TryGetBaseCost(QueryGraphManager &query_graph_manager, idx_t 
 	return true;
 }
 
+double FQPOptimizer::EstimateJoinMovementRows(QueryGraphManager &query_graph_manager, const DPJoinNode &left,
+	                                            const DPJoinNode &right, const string &destination) {
+	string local_source;
+	{
+		auto &state = GetFQPState(query_graph_manager.context);
+		std::lock_guard<std::mutex> guard(state.lock);
+		local_source = state.source_id;
+	}
+	auto target = destination.empty() ? local_source : destination;
+	auto movement_rows = left.fqp_realization_movement_rows + right.fqp_realization_movement_rows;
+	if (SelectedOutputSource(left, local_source) != target) {
+		movement_rows += double(left.cardinality);
+	}
+	if (SelectedOutputSource(right, local_source) != target) {
+		movement_rows += double(right.cardinality);
+	}
+	return movement_rows;
+}
+
 vector<FQPPlanAlternative>
 FQPOptimizer::GetJoinAlternatives(QueryGraphManager &query_graph_manager, JoinRelationSet &set, DPJoinNode &left,
                                   DPJoinNode &right, const vector<reference<NeighborInfo>> &possible_connections) {
@@ -239,6 +267,8 @@ FQPOptimizer::GetJoinAlternatives(QueryGraphManager &query_graph_manager, JoinRe
 		candidate.rows = cost.rows > 0 ? cost.rows : 1;
 		candidate.width = cost.width > 0 ? cost.width : 32;
 		candidate.movement_cost = movement_factor * double(candidate.rows) * double(candidate.width);
+		candidate.realization_movement_rows =
+		    EstimateJoinMovementRows(query_graph_manager, left, right, candidate.source);
 		candidate.total_cost = cost.total_cost + candidate.movement_cost;
 		results.push_back(std::move(candidate));
 	}
