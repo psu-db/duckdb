@@ -296,6 +296,35 @@ static bool AppendReferencedColumns(QueryGraphManager &query_graph_manager, idx_
 	return true;
 }
 
+static bool AppendFilterBindings(QueryGraphManager &query_graph_manager, JoinRelationSet &set,
+                                 vector<string> &predicates) {
+	for (auto &filter_ref : query_graph_manager.GetFilterBindings()) {
+		auto &filter = *filter_ref;
+		if (!JoinRelationSet::IsSubset(set, filter.set.get())) {
+			continue;
+		}
+		if (filter.join_type != JoinType::INNER && filter.join_type != JoinType::INVALID) {
+			return false;
+		}
+		// contrib/mock_table only propagates join trees whose join clauses are
+		// simple equality comparisons. Single-relation restrictions can still
+		// use the broader expression deparser below.
+		if (filter.set.get().count > 1 &&
+		    (filter.filter->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON ||
+		     filter.filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL)) {
+			return false;
+		}
+		string predicate;
+		if (!DeparseExpression(query_graph_manager, *filter.filter, predicate)) {
+			return false;
+		}
+		if (std::find(predicates.begin(), predicates.end(), predicate) == predicates.end()) {
+			predicates.push_back(std::move(predicate));
+		}
+	}
+	return true;
+}
+
 bool DeparseJoinCandidate(QueryGraphManager &query_graph_manager, JoinRelationSet &set, const string &dest_source,
                           const string &local_schema, string &sql) {
 	vector<string> from_items;
@@ -315,28 +344,8 @@ bool DeparseJoinCandidate(QueryGraphManager &query_graph_manager, JoinRelationSe
 		}
 	}
 
-	for (auto &filter_ref : query_graph_manager.GetFilterBindings()) {
-		auto &filter = *filter_ref;
-		if (filter.join_type != JoinType::INNER && filter.join_type != JoinType::INVALID) {
-			return false;
-		}
-		if (!JoinRelationSet::IsSubset(set, filter.set.get())) {
-			continue;
-		}
-		// contrib/mock_table only propagates join trees whose join clauses are
-		// simple equality comparisons. Single-relation restrictions can still
-		// use the broader expression deparser below.
-		if (filter.set.get().count > 1 && (filter.filter->GetExpressionClass() != ExpressionClass::BOUND_COMPARISON ||
-		                                   filter.filter->GetExpressionType() != ExpressionType::COMPARE_EQUAL)) {
-			return false;
-		}
-		string predicate;
-		if (!DeparseExpression(query_graph_manager, *filter.filter, predicate)) {
-			return false;
-		}
-		if (std::find(predicates.begin(), predicates.end(), predicate) == predicates.end()) {
-			predicates.push_back(predicate);
-		}
+	if (!AppendFilterBindings(query_graph_manager, set, predicates)) {
+		return false;
 	}
 
 	sql = "SELECT " + (projections.empty() ? "*" : StringUtil::Join(projections, ", ")) + " FROM " +
@@ -362,6 +371,10 @@ bool DeparseBaseCandidate(QueryGraphManager &query_graph_manager, idx_t relation
 	      " FROM " + relation;
 	vector<string> predicates;
 	if (!AppendTableFilters(query_graph_manager, relation_id, predicates)) {
+		return false;
+	}
+	auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(relation_id);
+	if (!AppendFilterBindings(query_graph_manager, relation_set, predicates)) {
 		return false;
 	}
 	if (!predicates.empty()) {
